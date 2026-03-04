@@ -1,0 +1,6 @@
+requests
+pyspark
+pymongo
+python-dotenv
+pyyaml
+dnspython
