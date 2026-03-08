@@ -48,7 +48,7 @@ Raw API data is saved locally at: data/raw/<date>/nws_raw.json
 
 ## Current Status
 
-  # Completed
+  ### Completed
   Weather data acquisition from the National Weather Service API
 
   Raw JSON data storage for traceability
@@ -59,7 +59,7 @@ Raw API data is saved locally at: data/raw/<date>/nws_raw.json
 
   Environment configuration support using .env
 
-  # In Progress
+  ### In Progress
   Spark-based processing and aggregation of climate observations
 
   Additional data source integrations
