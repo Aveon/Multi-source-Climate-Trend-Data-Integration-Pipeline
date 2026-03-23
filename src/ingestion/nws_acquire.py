@@ -1,17 +1,31 @@
 import os
 import json
 import argparse
+import sys
 from pathlib import Path
 from datetime import datetime, timezone
 import logging
 from typing import Tuple, Dict, Any, Optional
 import requests
 
+THIS_DIR = Path(__file__).resolve().parent
+SRC_ROOT = THIS_DIR.parent
+PROJECT_ROOT = SRC_ROOT.parent
+for path in (str(PROJECT_ROOT), str(SRC_ROOT), str(THIS_DIR)):
+    if path not in sys.path:
+        sys.path.insert(0, path)
+
+try:
+    from src.ingestion.station_manifest import load_station_manifest, first_non_empty
+except ModuleNotFoundError:
+    try:
+        from ingestion.station_manifest import load_station_manifest, first_non_empty
+    except ModuleNotFoundError:
+        from station_manifest import load_station_manifest, first_non_empty
 
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = PROJECT_ROOT / "data"
 
 
@@ -95,21 +109,40 @@ def print_sample(data: Dict[str, Any], n: int = 10, convert_wind_to_mps: bool = 
 def main(argv: Optional[list] = None) -> int:
     parser = argparse.ArgumentParser(description="Fetch NWS station observations and save raw JSON")
     parser.add_argument("--station", type=str, default="KATL", help="NWS station ID (e.g. KATL for Atlanta)")
+    parser.add_argument("--stations-csv", default=None, help="CSV manifest with nws_station_id values to ingest in batch")
     parser.add_argument("--user-agent", type=str, default="BigDataProject (mailto:joshua.young96@gmail.com)", help="User-Agent string with contact info")
     parser.add_argument("--out-dir", default=None, help="Directory to save raw JSON (defaults to data/raw/<date>)")
     parser.add_argument("--date", default=None, help="Run date in YYYY-MM-DD (defaults to today UTC)")
     parser.add_argument("--limit", type=int, default=100, help="Number of observations to request")
+    parser.add_argument("--limit-stations", type=int, default=None, help="Maximum number of stations to ingest from the manifest")
     args = parser.parse_args(argv)
 
     run_date = args.date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    out_dir = args.out_dir or str(DATA_DIR / "raw" / run_date)
+    out_dir = args.out_dir or str(DATA_DIR / "raw" / "nws" / f"run_date={run_date}")
     ensure_dir(out_dir)
 
-    raw_path = os.path.join(out_dir, "nws_raw.json")
+    if args.stations_csv:
+        stations = load_station_manifest(args.stations_csv, limit=args.limit_stations)
+        fetched = 0
+        for row in stations:
+            station_id = first_non_empty(row, "nws_station_id", "station_id")
+            if not station_id:
+                continue
 
+            station_out_dir = Path(out_dir) / f"station={station_id}"
+            ensure_dir(str(station_out_dir))
+
+            url, headers, params = build_nws_request(station_id, args.user_agent, limit=args.limit)
+            data = fetch_json(url, headers, params)
+            _save_raw_json(str(station_out_dir / "nws_raw.json"), data)
+            fetched += 1
+
+        logger.info("Saved NWS raw files for %d stations to %s", fetched, out_dir)
+        return 0
+
+    raw_path = os.path.join(out_dir, "nws_raw.json")
     url, headers, params = build_nws_request(args.station, args.user_agent, limit=args.limit)
     data = fetch_json(url, headers, params)
-
     _save_raw_json(raw_path, data)
     print_sample(data, n=10)
     return 0

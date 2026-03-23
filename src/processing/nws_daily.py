@@ -1,64 +1,88 @@
+import argparse
+import glob
+from pathlib import Path
+from typing import Optional
+
 from pyspark.sql.functions import (
-    to_date,
-    col,
     avg,
-    round as sround,
-    min as smin,
-    max as smax,
+    coalesce,
+    col,
     count,
-    when,
+    explode_outer,
     from_utc_timestamp,
     input_file_name,
+    lit,
+    max as smax,
+    min as smin,
     regexp_extract,
-    explode_outer,
-)
-import os
-from pathlib import Path
-
-# Spark session setup
-from pyspark.sql import SparkSession
-spark = (
-    SparkSession.builder
-    .appName("nws_daily")
-    .config("spark.hadoop.fs.defaultFS", "file:///")
-    .getOrCreate()
+    round as sround,
+    to_date,
+    when,
 )
 
-def main():
-    """Main processing: read raw NWS observations, normalize, and aggregate to daily level."""
+try:
+    from src.processing.spark_common import get_spark
+except ModuleNotFoundError:
+    from spark_common import get_spark
+
+
+def main(argv: Optional[list] = None) -> int:
+    parser = argparse.ArgumentParser(description="Normalize raw NWS observations into a daily climate dataset")
+    parser.add_argument("--raw-glob", default=None, help="Glob for raw NWS JSON files")
+    parser.add_argument("--stations-csv", default=None, help="Station manifest CSV for metadata enrichment")
+    parser.add_argument("--out-dir", default=None, help="Directory to save curated NWS parquet")
+    args = parser.parse_args(argv)
+
     project_root = Path(__file__).resolve().parents[2]
     data_dir = project_root / "data"
-    data_path = str(data_dir / "raw" / "*" / "nws_raw.json")
-    
-    try:
-        # Raw files are GeoJSON FeatureCollection objects formatted across multiple lines.
-        df_raw = spark.read.option("multiLine", True).json(data_path)
-    except Exception as e:
-        print(f"Error reading {data_path}: {e}")
-        return
+    raw_glob = args.raw_glob or str(data_dir / "raw" / "nws" / "run_date=*" / "station=*" / "nws_raw.json")
+    raw_paths = sorted(glob.glob(raw_glob))
+    if not raw_paths:
+        legacy_glob = str(data_dir / "raw" / "*" / "nws_raw.json")
+        raw_paths = sorted(glob.glob(legacy_glob))
+    if not raw_paths:
+        print(f"No raw NWS files matched {raw_glob}")
+        return 0
 
-    # Flatten properties and extract source metadata.
-    # In NWS raw files, properties lives under features[].properties.
-    if "features" in df_raw.columns:
-        df_props = (
-            df_raw
-            .select(explode_outer(col("features")).alias("feature"), input_file_name().alias("_src"))
-            .select(col("feature.properties.*"), col("_src"))
+    stations_csv = args.stations_csv or str(data_dir / "reference" / "weather_stations_master.csv")
+    out_dir = args.out_dir or str(data_dir / "processed" / "nws_daily" / "parquet")
+    local_tz = "America/New_York"
+
+    spark = get_spark("nws_daily")
+
+    df_raw = spark.read.option("multiLine", True).json(raw_paths)
+    df_props = (
+        df_raw
+        .select(
+            explode_outer(col("features")).alias("feature"),
+            input_file_name().alias("_src"),
         )
-    elif "properties" in df_raw.columns:
-        df_props = df_raw.select(col("properties.*"), input_file_name().alias("_src"))
-    else:
-        print(f"Error: expected 'features' or 'properties' in input schema, got columns={df_raw.columns}")
-        return
+        .select(
+            col("feature.properties.*"),
+            col("feature.geometry.coordinates").alias("geometry_coordinates"),
+            col("_src"),
+        )
+    )
 
-    # Local timezone for daily grouping
-    LOCAL_TZ = os.getenv("LOCAL_TZ", os.getenv("TZ", "America/New_York"))
+    manifest_df = (
+        spark.read
+        .option("header", True)
+        .csv(stations_csv)
+        .select(
+            col("noaa_station_id"),
+            col("nws_station_id").alias("manifest_nws_station_id"),
+            col("station_name").alias("manifest_station_name"),
+            col("state"),
+            col("country"),
+            col("latitude").cast("double").alias("manifest_latitude"),
+            col("longitude").cast("double").alias("manifest_longitude"),
+        )
+    )
 
-    # Normalize types, create wind_speed_mps (convert km/h -> m/s), extract run_date
-    df2 = (
+    df_daily = (
         df_props
         .withColumn("timestamp", col("timestamp").cast("timestamp"))
-        .withColumn("temperature", col("temperature.value").cast("double"))
+        .withColumn("temperature_c", col("temperature.value").cast("double"))
         .withColumn("wind_speed_raw", col("windSpeed.value").cast("double"))
         .withColumn("wind_speed_unit", col("windSpeed.unitCode"))
         .withColumn(
@@ -67,44 +91,55 @@ def main():
             .when(col("wind_speed_unit").contains("km_h"), col("wind_speed_raw") / 3.6)
             .otherwise(col("wind_speed_raw")),
         )
-        .withColumn("description", col("textDescription"))
-        .withColumn("station", col("stationId"))
-        .withColumn("run_date", regexp_extract(col("_src"), r"raw/([^/]+)/", 1))
-        .withColumn("local_timestamp", from_utc_timestamp(col("timestamp"), LOCAL_TZ))
-    )
-
-    # Aggregate to daily level
-    df_daily = (
-        df2
+        .withColumn("run_date", regexp_extract(col("_src"), r"run_date=([^/]+)/", 1))
+        .withColumn(
+            "run_date",
+            when(col("run_date") == "", regexp_extract(col("_src"), r"raw/([^/]+)/", 1)).otherwise(col("run_date")),
+        )
+        .withColumn("local_timestamp", from_utc_timestamp(col("timestamp"), local_tz))
         .withColumn("date", to_date(col("local_timestamp")))
-        .groupBy("station", "run_date", "date")
+        .groupBy("stationId", "stationName", "run_date", "date", "geometry_coordinates")
         .agg(
             count("*").alias("obs_count"),
-            sround(avg("temperature"), 2).alias("avg_temp_C"),
-            smin("temperature").alias("min_temp_C"),
-            smax("temperature").alias("max_temp_C"),
+            sround(avg("temperature_c"), 2).alias("avg_temp_c"),
+            smin("temperature_c").alias("min_temp_c"),
+            smax("temperature_c").alias("max_temp_c"),
             sround(avg("wind_speed_mps"), 2).alias("avg_wind_mps"),
-            sround((avg(when(col("wind_speed_mps").isNull(), 1).otherwise(0)) * 100), 2).alias("wind_missing_pct"),
-            (avg(when(col("description").isNull(), 1).otherwise(0)) * 100).alias("desc_missing_pct"),
+            sround(smax("wind_speed_mps"), 2).alias("max_wind_mps"),
         )
-        .orderBy(col("date").desc())
+        .join(
+            manifest_df,
+            col("stationId") == col("manifest_nws_station_id"),
+            "left",
+        )
+        .select(
+            lit("nws").alias("source"),
+            col("date"),
+            col("noaa_station_id"),
+            col("stationId").alias("source_station_id"),
+            coalesce(col("manifest_station_name"), col("stationName")).alias("station_name"),
+            col("state"),
+            col("country"),
+            coalesce(col("manifest_latitude"), col("geometry_coordinates")[1].cast("double")).alias("latitude"),
+            coalesce(col("manifest_longitude"), col("geometry_coordinates")[0].cast("double")).alias("longitude"),
+            col("avg_temp_c"),
+            col("min_temp_c"),
+            col("max_temp_c"),
+            lit(None).cast("double").alias("precip_mm"),
+            col("avg_wind_mps"),
+            col("max_wind_mps"),
+            lit(None).cast("double").alias("snow_mm"),
+            col("obs_count"),
+            col("run_date").alias("ingest_run_date"),
+        )
+        .orderBy(col("date").desc(), col("source_station_id"))
     )
 
-    # Show output
-    print("=== Daily Aggregated NWS Data ===")
-    df_daily.show(truncate=False)
-
-    curated_out = data_dir / "curated" / "nws_daily" / "parquet"
-    (
-        df_daily
-        .write
-        .mode("overwrite")
-        .parquet(str(curated_out))
-    )
-    print(f"Saved curated daily parquet to: {curated_out}")
-
-    # Stop Spark session
+    df_daily.write.mode("overwrite").parquet(out_dir)
+    print(f"Saved curated NWS parquet to: {out_dir}")
     spark.stop()
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
