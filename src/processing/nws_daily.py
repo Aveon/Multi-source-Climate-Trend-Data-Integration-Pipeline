@@ -28,6 +28,7 @@ except ModuleNotFoundError:
 
 def main(argv: Optional[list] = None) -> int:
     parser = argparse.ArgumentParser(description="Normalize raw NWS observations into a daily climate dataset")
+    parser.add_argument("--run-date", default=None, help="Run date to process from raw/nws/run_date=YYYY-MM-DD")
     parser.add_argument("--raw-glob", default=None, help="Glob for raw NWS JSON files")
     parser.add_argument("--stations-csv", default=None, help="Station manifest CSV for metadata enrichment")
     parser.add_argument("--out-dir", default=None, help="Directory to save curated NWS parquet")
@@ -35,9 +36,11 @@ def main(argv: Optional[list] = None) -> int:
 
     project_root = Path(__file__).resolve().parents[2]
     data_dir = project_root / "data"
-    raw_glob = args.raw_glob or str(data_dir / "raw" / "nws" / "run_date=*" / "station=*" / "nws_raw.json")
+    raw_glob = args.raw_glob or str(
+        data_dir / "raw" / "nws" / f"run_date={args.run_date or '*'}" / "station=*" / "nws_raw.json"
+    )
     raw_paths = sorted(glob.glob(raw_glob))
-    if not raw_paths:
+    if not raw_paths and args.run_date is None:
         legacy_glob = str(data_dir / "raw" / "*" / "nws_raw.json")
         raw_paths = sorted(glob.glob(legacy_glob))
     if not raw_paths:

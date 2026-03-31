@@ -2,6 +2,7 @@ import os
 import json
 import argparse
 import sys
+import time
 from pathlib import Path
 from datetime import datetime, timezone
 import logging
@@ -27,9 +28,11 @@ except ModuleNotFoundError:
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 DATA_DIR = PROJECT_ROOT / "data"
+RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
 def build_nws_request(station_id: str, user_agent: str, limit: int = 100) -> Tuple[str, Dict[str, str], Dict[str, Any]]:
+    """Build the URL, headers, and query params for one NWS observations request."""
     url = f"https://api.weather.gov/stations/{station_id}/observations"
     headers = {
         "User-Agent": user_agent,
@@ -39,11 +42,61 @@ def build_nws_request(station_id: str, user_agent: str, limit: int = 100) -> Tup
     return url, headers, params
 
 
-def fetch_json(url: str, headers: Dict[str, str], params: Dict[str, Any], timeout: int = 30) -> Dict[str, Any]:
-    resp = requests.get(url, headers=headers, params=params, timeout=timeout)
-    logger.info("HTTP %s %s", resp.status_code, url)
-    resp.raise_for_status()
-    return resp.json()
+def fetch_json(
+    session: requests.Session,
+    url: str,
+    headers: Dict[str, str],
+    params: Dict[str, Any],
+    timeout: int = 30,
+    max_attempts: int = 5,
+    backoff_seconds: float = 1.0,
+) -> Dict[str, Any]:
+    """Fetch one NWS observations payload with retries for transient failures."""
+    station_id = url.rstrip("/").split("/")[-2] if "/observations" in url else "unknown"
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            resp = session.get(url, headers=headers, params=params, timeout=timeout)
+            logger.info(
+                "HTTP %s %s station=%s attempt=%s/%s",
+                resp.status_code,
+                url,
+                station_id,
+                attempt,
+                max_attempts,
+            )
+
+            if resp.status_code in RETRYABLE_STATUS_CODES:
+                if attempt == max_attempts:
+                    resp.raise_for_status()
+
+                sleep_seconds = backoff_seconds * (2 ** (attempt - 1))
+                logger.warning(
+                    "Retrying NWS request after HTTP %s for station=%s in %.1fs",
+                    resp.status_code,
+                    station_id,
+                    sleep_seconds,
+                )
+                time.sleep(sleep_seconds)
+                continue
+
+            resp.raise_for_status()
+            return resp.json()
+
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            if attempt == max_attempts:
+                raise
+
+            sleep_seconds = backoff_seconds * (2 ** (attempt - 1))
+            logger.warning(
+                "Retrying NWS request after %s for station=%s in %.1fs",
+                type(exc).__name__,
+                station_id,
+                sleep_seconds,
+            )
+            time.sleep(sleep_seconds)
+
+    raise RuntimeError(f"Failed to fetch NWS data after {max_attempts} attempts for station={station_id}")
 
 
 def ensure_dir(path: str) -> None:
@@ -107,6 +160,7 @@ def print_sample(data: Dict[str, Any], n: int = 10, convert_wind_to_mps: bool = 
 
 
 def main(argv: Optional[list] = None) -> int:
+    """Fetch recent NWS station observations and save the raw payloads."""
     parser = argparse.ArgumentParser(description="Fetch NWS station observations and save raw JSON")
     parser.add_argument("--station", type=str, default="KATL", help="NWS station ID (e.g. KATL for Atlanta)")
     parser.add_argument("--stations-csv", default=None, help="CSV manifest with nws_station_id values to ingest in batch")
@@ -120,6 +174,7 @@ def main(argv: Optional[list] = None) -> int:
     run_date = args.date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
     out_dir = args.out_dir or str(DATA_DIR / "raw" / "nws" / f"run_date={run_date}")
     ensure_dir(out_dir)
+    session = requests.Session()
 
     if args.stations_csv:
         stations = load_station_manifest(args.stations_csv, limit=args.limit_stations)
@@ -133,7 +188,7 @@ def main(argv: Optional[list] = None) -> int:
             ensure_dir(str(station_out_dir))
 
             url, headers, params = build_nws_request(station_id, args.user_agent, limit=args.limit)
-            data = fetch_json(url, headers, params)
+            data = fetch_json(session, url, headers, params)
             _save_raw_json(str(station_out_dir / "nws_raw.json"), data)
             fetched += 1
 
@@ -142,7 +197,7 @@ def main(argv: Optional[list] = None) -> int:
 
     raw_path = os.path.join(out_dir, "nws_raw.json")
     url, headers, params = build_nws_request(args.station, args.user_agent, limit=args.limit)
-    data = fetch_json(url, headers, params)
+    data = fetch_json(session, url, headers, params)
     _save_raw_json(raw_path, data)
     print_sample(data, n=10)
     return 0

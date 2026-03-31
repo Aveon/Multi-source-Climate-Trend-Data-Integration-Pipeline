@@ -141,7 +141,7 @@ def write_curated_parquet_to_mongo(
     )
     col = db[target_collection]
     return upsert_documents(
-        iter_parquet_records(parquet_path, data_level="processed"),
+        iter_parquet_records(parquet_path, data_level="curated"),
         collection=col,
         key_field="_id",
         batch_size=batch_size,

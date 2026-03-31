@@ -3,6 +3,7 @@ import importlib
 import logging
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -29,6 +30,12 @@ def first(*vals):
     return None
 
 
+def optional_int(value: Optional[str]) -> Optional[int]:
+    if value is None or value == "":
+        return None
+    return int(value)
+
+
 def load_config() -> Dict[str, Any]:
     return {
         "MONGODB_URI": os.getenv("MONGODB_URI", ""),
@@ -45,8 +52,21 @@ def load_config() -> Dict[str, Any]:
         ),
         "NOAA_API_TOKEN": first(os.getenv("NOAA_API_TOKEN"), os.getenv("NOAA_TOKEN"), ""),
         "NOAA_DATASET_ID": first(os.getenv("NOAA_DATASET_ID"), "GHCND"),
+        "NOAA_INGEST_MODE": first(os.getenv("NOAA_INGEST_MODE"), "bulk_station"),
+        "NOAA_BULK_BASE_URL": first(
+            os.getenv("NOAA_BULK_BASE_URL"),
+            "https://www.ncei.noaa.gov/pub/data/ghcn/daily/by_station/{station_code}.csv.gz",
+        ),
         "OPEN_METEO_MODEL": first(os.getenv("OPEN_METEO_MODEL"), "era5"),
         "OPEN_METEO_TIMEZONE": first(os.getenv("OPEN_METEO_TIMEZONE"), "auto"),
+        "OPEN_METEO_REQUEST_DELAY_SECONDS": first(os.getenv("OPEN_METEO_REQUEST_DELAY_SECONDS"), "30.0"),
+        "OPEN_METEO_RATE_LIMIT_BACKOFF_SECONDS": first(os.getenv("OPEN_METEO_RATE_LIMIT_BACKOFF_SECONDS"), "60.0"),
+        "OPEN_METEO_POST_RATE_LIMIT_COOLDOWN_SECONDS": first(
+            os.getenv("OPEN_METEO_POST_RATE_LIMIT_COOLDOWN_SECONDS"),
+            "180.0",
+        ),
+        "OPEN_METEO_BATCH_SIZE": optional_int(os.getenv("OPEN_METEO_BATCH_SIZE")),
+        "OPEN_METEO_BATCH_INDEX": optional_int(first(os.getenv("OPEN_METEO_BATCH_INDEX"), "1")),
     }
 
 
@@ -95,6 +115,8 @@ def run_ingestion(
     end_date: str,
     stations_csv: str,
     limit_stations: Optional[int],
+    open_meteo_limit_stations: Optional[int],
+    open_meteo_station_offset: int,
     station_override: Optional[str],
 ) -> Optional[str]:
     limit_station_args = ["--limit-stations", str(limit_stations)] if limit_stations else []
@@ -117,13 +139,14 @@ def run_ingestion(
         return None
 
     if source == "noaa":
-        if not cfg["NOAA_API_TOKEN"]:
+        if cfg["NOAA_INGEST_MODE"] == "api" and not cfg["NOAA_API_TOKEN"]:
             raise ValueError("NOAA_API_TOKEN is required for NOAA ingestion")
         out_dir = str(DATA_DIR / "raw" / "noaa" / f"run_date={run_date}")
         args = [
             "--stations-csv", stations_csv,
-            "--token", cfg["NOAA_API_TOKEN"],
             "--dataset-id", cfg["NOAA_DATASET_ID"],
+            "--ingest-mode", cfg["NOAA_INGEST_MODE"],
+            "--bulk-base-url", cfg["NOAA_BULK_BASE_URL"],
             "--user-agent", cfg["USER_AGENT"],
             "--start-date", start_date,
             "--end-date", end_date,
@@ -131,21 +154,29 @@ def run_ingestion(
             "--date", run_date,
             *limit_station_args,
         ]
+        if cfg["NOAA_API_TOKEN"]:
+            args.extend(["--token", cfg["NOAA_API_TOKEN"]])
         run_module("src.ingestion.noaa_acquire", "ingestion.noaa_acquire", args)
         return os.path.join(out_dir, "noaa_daily.jsonl")
 
     if source == "open_meteo":
         out_dir = str(DATA_DIR / "raw" / "open_meteo" / f"run_date={run_date}")
+        open_meteo_limit = open_meteo_limit_stations if open_meteo_limit_stations is not None else limit_stations
+        open_meteo_limit_args = ["--limit-stations", str(open_meteo_limit)] if open_meteo_limit else []
         args = [
             "--stations-csv", stations_csv,
             "--start-date", start_date,
             "--end-date", end_date,
             "--model", cfg["OPEN_METEO_MODEL"],
             "--timezone", cfg["OPEN_METEO_TIMEZONE"],
+            "--request-delay-seconds", str(cfg["OPEN_METEO_REQUEST_DELAY_SECONDS"]),
+            "--rate-limit-backoff-seconds", str(cfg["OPEN_METEO_RATE_LIMIT_BACKOFF_SECONDS"]),
+            "--post-rate-limit-cooldown-seconds", str(cfg["OPEN_METEO_POST_RATE_LIMIT_COOLDOWN_SECONDS"]),
             "--user-agent", cfg["USER_AGENT"],
             "--out-dir", out_dir,
             "--date", run_date,
-            *limit_station_args,
+            "--station-offset", str(open_meteo_station_offset),
+            *open_meteo_limit_args,
         ]
         run_module("src.ingestion.open_meteo_acquire", "ingestion.open_meteo_acquire", args)
         return os.path.join(out_dir, "open_meteo_daily.jsonl")
@@ -156,24 +187,68 @@ def run_ingestion(
 def run_processing(
     sources: List[str],
     *,
+    run_date: str,
     stations_csv: str,
 ) -> None:
     if "nws" in sources:
         run_module(
             "src.processing.nws_daily",
             "processing.nws_daily",
-            ["--stations-csv", stations_csv],
+            ["--stations-csv", stations_csv, "--run-date", run_date],
         )
     if "noaa" in sources:
-        run_module("src.processing.noaa_daily", "processing.noaa_daily", [])
+        run_module("src.processing.noaa_daily", "processing.noaa_daily", ["--run-date", run_date])
     if "open_meteo" in sources:
-        run_module("src.processing.open_meteo_daily", "processing.open_meteo_daily", [])
+        run_module("src.processing.open_meteo_daily", "processing.open_meteo_daily", ["--run-date", run_date])
 
     run_module(
         "src.processing.climate_unified",
         "processing.climate_unified",
         ["--sources", ",".join(sources)],
     )
+
+
+def run_ingestion_batch(
+    sources: List[str],
+    cfg: Dict[str, Any],
+    *,
+    run_date: str,
+    start_date: str,
+    end_date: str,
+    stations_csv: str,
+    limit_stations: Optional[int],
+    open_meteo_limit_stations: Optional[int],
+    open_meteo_station_offset: int,
+    station_override: Optional[str],
+) -> Dict[str, Optional[str]]:
+    """Run source ingestion in parallel so network-bound APIs can overlap."""
+    raw_outputs: Dict[str, Optional[str]] = {}
+    max_workers = min(len(sources), 3)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_source = {}
+        for source in sources:
+            logger.info("Running ingestion for source=%s", source)
+            future = executor.submit(
+                run_ingestion,
+                source,
+                cfg,
+                run_date=run_date,
+                start_date=start_date,
+                end_date=end_date,
+                stations_csv=stations_csv,
+                limit_stations=limit_stations,
+                open_meteo_limit_stations=open_meteo_limit_stations,
+                open_meteo_station_offset=open_meteo_station_offset,
+                station_override=station_override if source == "nws" else None,
+            )
+            future_to_source[future] = source
+
+        for future in as_completed(future_to_source):
+            source = future_to_source[future]
+            raw_outputs[source] = future.result()
+
+    return raw_outputs
 
 
 def store_curated_to_mongo(cfg: Dict[str, Any]) -> Dict[str, int]:
@@ -206,6 +281,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--station", default=None, help="Single NWS station override")
     parser.add_argument("--stations-csv", default=cfg["STATIONS_CSV"], help="Station manifest CSV")
     parser.add_argument("--limit-stations", type=int, default=None, help="Limit station count for testing")
+    parser.add_argument("--open-meteo-batch-size", type=int, default=cfg["OPEN_METEO_BATCH_SIZE"], help="Optional Open-Meteo station batch size")
+    parser.add_argument("--open-meteo-batch-index", type=int, default=cfg["OPEN_METEO_BATCH_INDEX"], help="1-based Open-Meteo station batch number")
     parser.add_argument("--skip-ingest", action="store_true", help="Skip source ingestion")
     parser.add_argument("--skip-process", action="store_true", help="Skip Spark processing")
     parser.add_argument("--skip-mongo", action="store_true", help="Skip MongoDB storage step")
@@ -219,21 +296,38 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     run_date = args.date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
     raw_outputs: Dict[str, Optional[str]] = {}
+    open_meteo_limit_stations = args.open_meteo_batch_size
+    open_meteo_station_offset = 0
+
+    if open_meteo_limit_stations is not None:
+        if open_meteo_limit_stations <= 0:
+            logger.error("--open-meteo-batch-size must be greater than zero")
+            return 1
+        if args.open_meteo_batch_index is None or args.open_meteo_batch_index <= 0:
+            logger.error("--open-meteo-batch-index must be greater than zero")
+            return 1
+        open_meteo_station_offset = (args.open_meteo_batch_index - 1) * open_meteo_limit_stations
+        logger.info(
+            "Open-Meteo batching enabled: batch=%s size=%s offset=%s",
+            args.open_meteo_batch_index,
+            open_meteo_limit_stations,
+            open_meteo_station_offset,
+        )
 
     try:
         if not args.skip_ingest:
-            for source in sources:
-                logger.info("Running ingestion for source=%s", source)
-                raw_outputs[source] = run_ingestion(
-                    source,
-                    cfg,
-                    run_date=run_date,
-                    start_date=args.start_date,
-                    end_date=args.end_date,
-                    stations_csv=args.stations_csv,
-                    limit_stations=args.limit_stations,
-                    station_override=args.station if source == "nws" else None,
-                )
+            raw_outputs = run_ingestion_batch(
+                sources,
+                cfg,
+                run_date=run_date,
+                start_date=args.start_date,
+                end_date=args.end_date,
+                stations_csv=args.stations_csv,
+                limit_stations=args.limit_stations,
+                open_meteo_limit_stations=open_meteo_limit_stations,
+                open_meteo_station_offset=open_meteo_station_offset,
+                station_override=args.station,
+            )
         else:
             logger.info("Skipping ingestion for sources=%s", sources)
     except Exception:
@@ -248,7 +342,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 args.start_date,
                 args.end_date,
             )
-            run_processing(sources, stations_csv=args.stations_csv)
+            run_processing(sources, run_date=run_date, stations_csv=args.stations_csv)
         else:
             logger.info("Skipping Spark processing")
     except Exception:

@@ -3,3 +3,7 @@
 __pycache__/
 *.pyc
 .vscode/
+# Generated pipeline outputs
+data/raw/
+data/processed/
+data/curated/
