@@ -1,5 +1,6 @@
 import argparse
 import glob
+import logging
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -15,8 +16,13 @@ from pyspark.sql.functions import (
 
 try:
     from src.processing.spark_common import get_spark
+    from src.processing.metrics import write_metrics
 except ModuleNotFoundError:
     from spark_common import get_spark
+    from metrics import write_metrics
+
+
+logger = logging.getLogger(__name__)
 
 
 REQUIRED_NOAA_COLUMNS = (
@@ -61,26 +67,41 @@ def main(argv: Optional[list] = None) -> int:
         data_dir / "raw" / "noaa" / f"run_date={args.run_date or '*'}" / "noaa_daily.jsonl"
     )
     out_dir = args.out_dir or str(data_dir / "processed" / "noaa_daily" / "parquet")
+    run_date = args.run_date or "*"
     raw_paths = find_usable_raw_paths(raw_glob)
     if not raw_paths:
         print(f"No non-empty raw NOAA files matched {raw_glob}")
-        return 0
+        return 1
 
     spark = get_spark("noaa_daily")
     try:
         df_raw = spark.read.json(raw_paths)
+        raw_input_rows = df_raw.count()
         missing_columns = get_missing_columns(df_raw.columns)
         if missing_columns:
             print(
                 "Skipping NOAA processing because required columns are missing: "
                 + ", ".join(missing_columns)
             )
-            return 0
+            return 1
 
-        df_pivoted = (
+        df_normalized = (
             df_raw
             .withColumn("latitude", col("latitude").cast("double"))
             .withColumn("longitude", col("longitude").cast("double"))
+            .withColumn("parsed_date", col("date").cast("date"))
+        )
+        invalid_condition = (
+            col("noaa_station_id").isNull()
+            | col("datatype").isNull()
+            | col("parsed_date").isNull()
+        )
+        invalid_rows_removed = df_normalized.filter(invalid_condition).count()
+        df_valid = df_normalized.filter(~invalid_condition).cache()
+        valid_input_rows = df_valid.count()
+
+        df_pivoted = (
+            df_valid
             .groupBy(
                 "noaa_station_id",
                 "station_name",
@@ -89,7 +110,7 @@ def main(argv: Optional[list] = None) -> int:
                 "latitude",
                 "longitude",
                 "run_date",
-                "date",
+                "parsed_date",
             )
             .agg(
                 count("*").alias("obs_count"),
@@ -102,7 +123,7 @@ def main(argv: Optional[list] = None) -> int:
             )
             .select(
                 lit("noaa").alias("source"),
-                col("date").cast("date").alias("date"),
+                col("parsed_date").alias("date"),
                 col("noaa_station_id"),
                 col("noaa_station_id").alias("source_station_id"),
                 col("station_name"),
@@ -121,10 +142,26 @@ def main(argv: Optional[list] = None) -> int:
                 col("run_date").alias("ingest_run_date"),
             )
             .orderBy(col("date").desc(), col("noaa_station_id"))
+            .cache()
         )
+        output_rows = df_pivoted.count()
 
         df_pivoted.write.mode("overwrite").parquet(out_dir)
-        print(f"Saved curated NOAA parquet to: {out_dir}")
+        if run_date != "*":
+            write_metrics(
+                "noaa",
+                run_date,
+                {
+                    "source": "noaa",
+                    "run_date": run_date,
+                    "raw_input_rows": raw_input_rows,
+                    "invalid_rows_removed": invalid_rows_removed,
+                    "valid_input_rows": valid_input_rows,
+                    "output_rows": output_rows,
+                    "rows_consolidated_by_aggregation": max(0, valid_input_rows - output_rows),
+                },
+            )
+        logger.debug("Saved curated NOAA parquet to: %s", out_dir)
         return 0
     finally:
         spark.stop()

@@ -46,10 +46,12 @@ VALUE_SCALE_FACTORS = {
 
 
 def parse_date(value: str) -> date:
+    """Parse a YYYY-MM-DD string into a date object."""
     return datetime.strptime(value, "%Y-%m-%d").date()
 
 
 def iter_year_windows(start_date: date, end_date: date) -> Iterable[Tuple[date, date]]:
+    """Split a long date range into calendar-year windows for NOAA requests."""
     current = start_date
     while current <= end_date:
         window_end = min(date(current.year, 12, 31), end_date)
@@ -67,6 +69,7 @@ def build_request_params(
     limit: int,
     offset: int,
 ) -> Dict[str, object]:
+    """Build the NOAA CDO query parameters for one station window and page."""
     return {
         "datasetid": dataset_id,
         "stationid": station_id,
@@ -100,7 +103,7 @@ def fetch_page(
     for attempt in range(1, max_attempts + 1):
         try:
             response = session.get(NOAA_API_URL, headers=headers, params=params, timeout=timeout)
-            logger.info(
+            logger.debug(
                 "HTTP %s %s station=%s %s..%s offset=%s attempt=%s/%s",
                 response.status_code,
                 NOAA_API_URL,
@@ -156,7 +159,35 @@ def fetch_page(
 
 
 def json_line(record: Dict[str, object]) -> str:
+    """Serialize one raw record into a stable JSONL row."""
     return json.dumps(record, sort_keys=True)
+
+
+def append_failed_station(
+    failed_path: Path,
+    *,
+    run_date: str,
+    station: Dict[str, str],
+    start_date: str,
+    end_date: str,
+    error: Exception,
+) -> None:
+    """Record station-level NOAA failures for later replay."""
+    payload = {
+        "run_date": run_date,
+        "source": "noaa",
+        "noaa_station_id": station.get("noaa_station_id"),
+        "nws_station_id": station.get("nws_station_id"),
+        "station_name": station.get("station_name"),
+        "state": station.get("state"),
+        "start_date": start_date,
+        "end_date": end_date,
+        "error_type": type(error).__name__,
+        "error_message": str(error),
+        "logged_at": datetime.now(timezone.utc).isoformat(),
+    }
+    with failed_path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(payload, sort_keys=True) + "\n")
 
 
 def normalize_bulk_value(datatype: str, raw_value: str) -> Optional[float]:
@@ -230,7 +261,7 @@ def fetch_bulk_station_bytes(
     for attempt in range(1, max_attempts + 1):
         try:
             response = session.get(station_url, timeout=timeout)
-            logger.info(
+            logger.debug(
                 "HTTP %s %s station=%s attempt=%s/%s",
                 response.status_code,
                 station_url,
@@ -339,46 +370,65 @@ def write_bulk_station_records(
     session: requests.Session,
     stations: List[Dict[str, str]],
     *,
+    failed_path: Path,
     run_date: str,
     dataset_id: str,
     start_date: date,
     end_date: date,
     datatypes: List[str],
     base_url: str,
+    fail_on_station_error: bool,
 ) -> Tuple[int, int]:
     """Write NOAA bulk station records to JSONL and return download/row counts."""
     download_count = 0
     record_count = 0
+    failed_stations = 0
 
     for station in stations:
         noaa_station_id = station.get("noaa_station_id", "")
         if not noaa_station_id:
             continue
 
-        logger.info(
-            "Downloading NOAA bulk station file for station=%s window=%s..%s",
-            noaa_station_id,
-            start_date.isoformat(),
-            end_date.isoformat(),
-        )
-        wrote_station_rows = False
-        for record in iter_bulk_station_records(
-            session,
-            station,
-            run_date=run_date,
-            dataset_id=dataset_id,
-            start_date=start_date,
-            end_date=end_date,
-            datatypes=datatypes,
-            base_url=base_url,
-        ):
-            if not wrote_station_rows:
-                download_count += 1
-                wrote_station_rows = True
-            fh.write(json_line(record) + "\n")
-            record_count += 1
+        try:
+            station_records = list(
+                iter_bulk_station_records(
+                    session,
+                    station,
+                    run_date=run_date,
+                    dataset_id=dataset_id,
+                    start_date=start_date,
+                    end_date=end_date,
+                    datatypes=datatypes,
+                    base_url=base_url,
+                )
+            )
+        except Exception as exc:
+            failed_stations += 1
+            append_failed_station(
+                failed_path,
+                run_date=run_date,
+                station=station,
+                start_date=start_date.isoformat(),
+                end_date=end_date.isoformat(),
+                error=exc,
+            )
+            if fail_on_station_error:
+                raise
+            logger.error(
+                "Skipping NOAA station=%s after %s: %s",
+                noaa_station_id,
+                type(exc).__name__,
+                exc,
+            )
+            continue
 
-    return download_count, record_count
+        if station_records:
+            download_count += 1
+            for record in station_records:
+                fh.write(json_line(record) + "\n")
+            record_count += len(station_records)
+
+    return download_count, record_count, failed_stations
 
 
 def write_api_records(
@@ -386,6 +436,7 @@ def write_api_records(
     session: requests.Session,
     stations: List[Dict[str, str]],
     *,
+    failed_path: Path,
     run_date: str,
     dataset_id: str,
     start_date: date,
@@ -393,72 +444,102 @@ def write_api_records(
     datatypes: List[str],
     token: str,
     user_agent: str,
+    fail_on_station_error: bool,
 ) -> Tuple[int, int]:
     """Write NOAA API results to JSONL and return request/row counts."""
     request_count = 0
     record_count = 0
+    failed_stations = 0
 
     for station in stations:
         noaa_station_id = station.get("noaa_station_id", "")
         if not noaa_station_id:
             continue
 
-        for window_start, window_end in iter_year_windows(start_date, end_date):
-            offset = 1
-            limit = 1000
+        try:
+            station_records: List[Dict[str, object]] = []
+            station_request_count = 0
+            for window_start, window_end in iter_year_windows(start_date, end_date):
+                offset = 1
+                limit = 1000
 
-            while True:
-                params = build_request_params(
-                    dataset_id,
-                    noaa_station_id,
-                    window_start,
-                    window_end,
-                    datatypes,
-                    limit=limit,
-                    offset=offset,
-                )
-                payload = fetch_page(
-                    session,
-                    token=token,
-                    user_agent=user_agent,
-                    params=params,
-                )
-                request_count += 1
-                results = payload.get("results", [])
-
-                for item in results:
-                    raw_value = item.get("value")
-                    try:
-                        value = float(raw_value) if raw_value is not None else None
-                    except (TypeError, ValueError):
-                        value = None
-
-                    record = build_common_record(
-                        station,
-                        run_date=run_date,
-                        dataset_id=dataset_id,
-                        station_id=noaa_station_id,
-                        day=parse_date(item.get("date", "")[:10]),
-                        datatype=item.get("datatype"),
-                        value=value,
-                        attributes=item.get("attributes"),
-                        request_window_start=window_start.isoformat(),
-                        request_window_end=window_end.isoformat(),
+                while True:
+                    params = build_request_params(
+                        dataset_id,
+                        noaa_station_id,
+                        window_start,
+                        window_end,
+                        datatypes,
+                        limit=limit,
+                        offset=offset,
                     )
-                    fh.write(json_line(record) + "\n")
-                    record_count += 1
+                    payload = fetch_page(
+                        session,
+                        token=token,
+                        user_agent=user_agent,
+                        params=params,
+                    )
+                    station_request_count += 1
+                    results = payload.get("results", [])
 
-                metadata = payload.get("metadata", {}).get("resultset", {})
-                total = int(metadata.get("count", len(results)))
-                if not results or offset + limit > total:
-                    break
+                    for item in results:
+                        raw_value = item.get("value")
+                        try:
+                            value = float(raw_value) if raw_value is not None else None
+                        except (TypeError, ValueError):
+                            value = None
 
-                offset += limit
+                        station_records.append(
+                            build_common_record(
+                                station,
+                                run_date=run_date,
+                                dataset_id=dataset_id,
+                                station_id=noaa_station_id,
+                                day=parse_date(item.get("date", "")[:10]),
+                                datatype=item.get("datatype"),
+                                value=value,
+                                attributes=item.get("attributes"),
+                                request_window_start=window_start.isoformat(),
+                                request_window_end=window_end.isoformat(),
+                            )
+                        )
 
-    return request_count, record_count
+                    metadata = payload.get("metadata", {}).get("resultset", {})
+                    total = int(metadata.get("count", len(results)))
+                    if not results or offset + limit > total:
+                        break
+
+                    offset += limit
+        except Exception as exc:
+            failed_stations += 1
+            append_failed_station(
+                failed_path,
+                run_date=run_date,
+                station=station,
+                start_date=start_date.isoformat(),
+                end_date=end_date.isoformat(),
+                error=exc,
+            )
+            if fail_on_station_error:
+                raise
+            logger.error(
+                "Skipping NOAA station=%s after %s: %s",
+                noaa_station_id,
+                type(exc).__name__,
+                exc,
+            )
+            continue
+
+        request_count += station_request_count
+        for record in station_records:
+            fh.write(json_line(record) + "\n")
+        record_count += len(station_records)
+
+    return request_count, record_count, failed_stations
 
 
 def main(argv: Optional[list] = None) -> int:
+    """Fetch NOAA daily data through either the API or station bulk files."""
     parser = argparse.ArgumentParser(description="Fetch NOAA CDO daily data and save raw JSONL")
     parser.add_argument("--stations-csv", required=True, help="CSV manifest with noaa_station_id values")
     parser.add_argument("--token", required=False, default="", help="NOAA CDO API token")
@@ -472,12 +553,14 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--out-dir", default=None, help="Directory to save raw NOAA JSONL")
     parser.add_argument("--date", default=None, help="Run date in YYYY-MM-DD (defaults to today UTC)")
     parser.add_argument("--limit-stations", type=int, default=None, help="Maximum number of stations to ingest from the manifest")
+    parser.add_argument("--fail-on-station-error", action="store_true", help="Stop the run when any station fails")
     args = parser.parse_args(argv)
 
     run_date = args.date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
     out_dir = Path(args.out_dir or (DATA_DIR / "raw" / "noaa" / f"run_date={run_date}"))
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "noaa_daily.jsonl"
+    failed_path = out_dir / "noaa_failed_stations.jsonl"
 
     stations = load_station_manifest(args.stations_csv, limit=args.limit_stations)
     datatypes = [part.strip() for part in args.datatypes.split(",") if part.strip()] or DEFAULT_DATATYPES
@@ -485,35 +568,43 @@ def main(argv: Optional[list] = None) -> int:
     end_date = parse_date(args.end_date)
 
     session = requests.Session()
+    if failed_path.exists():
+        failed_path.unlink()
 
     with out_path.open("w", encoding="utf-8") as fh:
         if args.ingest_mode == "bulk_station":
-            request_count, record_count = write_bulk_station_records(
+            request_count, record_count, failed_stations = write_bulk_station_records(
                 fh,
                 session,
                 stations,
+                failed_path=failed_path,
                 run_date=run_date,
                 dataset_id=args.dataset_id,
                 start_date=start_date,
                 end_date=end_date,
                 datatypes=datatypes,
                 base_url=args.bulk_base_url,
+                fail_on_station_error=args.fail_on_station_error,
             )
-            logger.info(
-                "Saved %d NOAA rows from %d bulk station downloads to %s",
+            logger.debug(
+                "Saved %d NOAA rows from %d bulk station downloads to %s (failed_stations=%s)",
                 record_count,
                 request_count,
                 out_path,
+                failed_stations,
             )
+            if failed_stations and record_count == 0:
+                return 1
             return 0
 
         if not args.token:
             raise ValueError("NOAA token is required when ingest-mode=api")
 
-        request_count, record_count = write_api_records(
+        request_count, record_count, failed_stations = write_api_records(
             fh,
             session,
             stations,
+            failed_path=failed_path,
             run_date=run_date,
             dataset_id=args.dataset_id,
             start_date=start_date,
@@ -521,9 +612,18 @@ def main(argv: Optional[list] = None) -> int:
             datatypes=datatypes,
             token=args.token,
             user_agent=args.user_agent,
+            fail_on_station_error=args.fail_on_station_error,
         )
 
-    logger.info("Saved %d NOAA rows from %d requests to %s", record_count, request_count, out_path)
+    logger.debug(
+        "Saved %d NOAA rows from %d requests to %s (failed_stations=%s)",
+        record_count,
+        request_count,
+        out_path,
+        failed_stations,
+    )
+    if failed_stations and record_count == 0:
+        return 1
     return 0
 
 

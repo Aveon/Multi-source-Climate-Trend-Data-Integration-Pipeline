@@ -1,5 +1,6 @@
 import argparse
 import glob
+import logging
 from pathlib import Path
 from typing import List, Optional
 
@@ -21,16 +22,19 @@ except ModuleNotFoundError:
     from spark_common import get_spark
 
 
+logger = logging.getLogger(__name__)
+
 PROCESSED_PATHS = {
     "nws": "nws_daily/parquet",
     "noaa": "noaa_daily/parquet",
-    "open_meteo": "open_meteo_daily/parquet",
+    "meteostat": "meteostat_daily/parquet",
 }
 
 
 def main(argv: Optional[list] = None) -> int:
+    """Combine processed source datasets and derive unified yearly trend outputs."""
     parser = argparse.ArgumentParser(description="Union processed source datasets and build curated trend-ready outputs")
-    parser.add_argument("--sources", default="nws,noaa,open_meteo", help="Comma-separated processed sources to include")
+    parser.add_argument("--sources", default="nws,noaa,meteostat", help="Comma-separated processed sources to include")
     parser.add_argument("--out-dir", default=None, help="Directory to save curated unified climate parquet")
     parser.add_argument("--trend-dir", default=None, help="Directory to save yearly trend parquet")
     args = parser.parse_args(argv)
@@ -56,7 +60,7 @@ def main(argv: Optional[list] = None) -> int:
     if not frames:
         print(f"No processed datasets found for sources={sources}")
         spark.stop()
-        return 0
+        return 1
 
     unified = frames[0]
     for frame in frames[1:]:
@@ -101,9 +105,9 @@ def main(argv: Optional[list] = None) -> int:
     )
     yearly_source.write.mode("overwrite").parquet(source_summary_dir)
 
-    print(f"Saved unified climate parquet to: {out_dir}")
-    print(f"Saved yearly station trends to: {trend_dir}")
-    print(f"Saved yearly source trends to: {source_summary_dir}")
+    logger.debug("Saved unified climate parquet to: %s", out_dir)
+    logger.debug("Saved yearly station trends to: %s", trend_dir)
+    logger.debug("Saved yearly source trends to: %s", source_summary_dir)
     spark.stop()
     return 0
 

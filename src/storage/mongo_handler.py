@@ -1,10 +1,13 @@
 import json
+import logging
 import os
+import time
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 from pymongo import MongoClient, ReplaceOne
+from pymongo.errors import AutoReconnect, ConnectionFailure, ExecutionTimeout, NetworkTimeout, ServerSelectionTimeoutError
 
 try:
     from src.processing.spark_common import get_spark
@@ -13,6 +16,16 @@ except ModuleNotFoundError:
         from spark_common import get_spark
     except ModuleNotFoundError:
         get_spark = None
+
+
+logger = logging.getLogger(__name__)
+RETRYABLE_MONGO_ERRORS = (
+    AutoReconnect,
+    ConnectionFailure,
+    ExecutionTimeout,
+    NetworkTimeout,
+    ServerSelectionTimeoutError,
+)
 
 
 def get_db(mongo_uri: Optional[str] = None, db_name: Optional[str] = None):
@@ -34,6 +47,7 @@ def db_to_records(df, limit: Optional[int] = None) -> List[Dict[str, Any]]:
 
 
 def _normalize_scalar(value: Any) -> Any:
+    """Convert date-like Python values into MongoDB-friendly scalar forms."""
     if isinstance(value, datetime):
         return value.isoformat()
     if isinstance(value, date):
@@ -42,14 +56,44 @@ def _normalize_scalar(value: Any) -> Any:
 
 
 def _normalize_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize every field in a record before it is written to MongoDB."""
     return {key: _normalize_scalar(value) for key, value in record.items()}
 
 
 def build_climate_doc_id(record: Dict[str, Any]) -> str:
+    """Build a stable document key from source, station, and date."""
     source = record.get("source") or "unknown"
     station_id = record.get("source_station_id") or record.get("noaa_station_id") or "unknown_station"
     record_date = record.get("date") or "unknown_date"
     return f"{source}|{station_id}|{record_date}"
+
+
+def execute_bulk_write_with_retry(
+    collection,
+    batch: List,
+    *,
+    progress_label: str,
+    max_attempts: int = 5,
+    backoff_seconds: float = 1.0,
+):
+    """Retry transient MongoDB bulk-write failures with exponential backoff."""
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return collection.bulk_write(batch, ordered=False)
+        except RETRYABLE_MONGO_ERRORS as exc:
+            if attempt == max_attempts:
+                raise
+
+            sleep_seconds = backoff_seconds * (2 ** (attempt - 1))
+            logger.warning(
+                "Retrying MongoDB bulk write for %s after %s in %.1fs (attempt=%s/%s)",
+                progress_label,
+                type(exc).__name__,
+                sleep_seconds,
+                attempt,
+                max_attempts,
+            )
+            time.sleep(sleep_seconds)
 
 
 def upsert_documents(
@@ -58,9 +102,13 @@ def upsert_documents(
     collection,
     key_field: str = "_id",
     batch_size: int = 1000,
+    progress_label: str = "documents",
 ) -> Dict[str, int]:
+    """Batch upsert documents into MongoDB and report new versus updated rows."""
     total_docs = 0
-    affected = 0
+    upserted = 0
+    modified = 0
+    matched = 0
     batch: List = []
 
     for doc in docs:
@@ -72,18 +120,44 @@ def upsert_documents(
         total_docs += 1
 
         if len(batch) >= batch_size:
-            bulk = collection.bulk_write(batch, ordered=False)
-            affected += getattr(bulk, "upserted_count", 0) + getattr(bulk, "modified_count", 0)
+            bulk = execute_bulk_write_with_retry(collection, batch, progress_label=progress_label)
+            upserted += getattr(bulk, "upserted_count", 0)
+            modified += getattr(bulk, "modified_count", 0)
+            matched += getattr(bulk, "matched_count", 0)
+            logger.debug(
+                "MongoDB upsert progress for %s: processed=%s upserted=%s modified=%s matched=%s",
+                progress_label,
+                total_docs,
+                upserted,
+                modified,
+                matched,
+            )
             batch = []
 
     if batch:
-        bulk = collection.bulk_write(batch, ordered=False)
-        affected += getattr(bulk, "upserted_count", 0) + getattr(bulk, "modified_count", 0)
+        bulk = execute_bulk_write_with_retry(collection, batch, progress_label=progress_label)
+        upserted += getattr(bulk, "upserted_count", 0)
+        modified += getattr(bulk, "modified_count", 0)
+        matched += getattr(bulk, "matched_count", 0)
+        logger.debug(
+            "MongoDB upsert progress for %s: processed=%s upserted=%s modified=%s matched=%s",
+            progress_label,
+            total_docs,
+            upserted,
+            modified,
+            matched,
+        )
 
-    return {"to_process": total_docs, "inserted": affected}
+    return {
+        "to_process": total_docs,
+        "upserted": upserted,
+        "modified": modified,
+        "matched": matched,
+    }
 
 
 def iter_parquet_records(parquet_path: str, *, data_level: str) -> Iterable[Dict[str, Any]]:
+    """Stream parquet rows as normalized MongoDB-ready climate documents."""
     if get_spark is None:
         raise RuntimeError("Spark helper is unavailable; cannot read processed parquet")
 
@@ -121,6 +195,7 @@ def write_processed_parquet_to_mongo(
         collection=col,
         key_field="_id",
         batch_size=batch_size,
+        progress_label=f"processed parquet {parquet_path}",
     )
 
 
@@ -145,10 +220,12 @@ def write_curated_parquet_to_mongo(
         collection=col,
         key_field="_id",
         batch_size=batch_size,
+        progress_label=f"curated parquet {parquet_path}",
     )
 
 
 def infer_run_date_from_path(raw_path: str) -> Optional[str]:
+    """Extract a run date from the project's raw-data path conventions."""
     parts = Path(raw_path).parts
     for part in parts:
         if part.startswith("run_date="):
@@ -211,8 +288,9 @@ def write_nws_to_mongo(
     )
     col = db[target_collection]
     docs = build_nws_documents(raw_path, key_field=key_field)
-    return upsert_documents(docs, collection=col, key_field=key_field)
+    return upsert_documents(docs, collection=col, key_field=key_field, progress_label=f"legacy nws raw {raw_path}")
 
 
 def count_docs(db, collection: str) -> int:
+    """Return the current number of documents in a MongoDB collection."""
     return db[collection].count_documents({})
