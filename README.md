@@ -2,14 +2,14 @@
 
 ## Project Description
 
-The project is multi-level Big Data system stack that aims to process 21.9 million pieces of climate data from 2016 to the current year. It utilizes a distributed system that combines Apache Spark for parallel processing, the Hadoop Distributed File System (HDFS) for fault-tolerant storage, and MongoDB for analytical queries. The project's goal is to identify long-term trends for temperature and precipitation levels from 2,000 worldwide weather stations across the United States. 
+This project is a multi-source climate data pipeline that processes historical and recent weather observations into analytics-ready daily climate records. It uses Apache Spark for parallel transformation work and MongoDB for downstream analytical queries. The current pipeline integrates NOAA, Meteostat, and NWS data for a U.S.-focused station set and produces curated daily and yearly climate trend outputs.
 
 ## Data Source Identification
 The system ingests heterogeneous data from three primary meteorological sources:
 
 1. **National Oceanic and Atmospheric Administration (NOAA) Climate Data Online (CDO) API V2:** Primary source for historical daily summaries and global station metadata.
 2. **National Weather Service (NWS) API:** Utilized for high-frequency observations and regional US climate data.
-3. **Open-Meteo Historical Weather API:** Provides supplemental high-resolution global climate records.
+3. **Meteostat Bulk Daily Data:** Provides supplemental historical daily climate records via station/year bulk files.
 
 ## Setup Instructions
 
@@ -52,8 +52,8 @@ Default optional variables:
 MONGODB_DB=climate
 MONGODB_COLLECTION=climate_daily
 STATIONS_CSV=data/reference/weather_stations_master.csv
-OPEN_METEO_MODEL=era5
-OPEN_METEO_TIMEZONE=auto
+METEOSTAT_BATCH_SIZE=
+METEOSTAT_BATCH_INDEX=1
 ```
 
 ## How to Run Pipeline
@@ -62,41 +62,44 @@ From the project root directory run:
 
 ```bash
 .venv/bin/python src/main.py \
-  --sources noaa,open_meteo,nws \
-  --start-date 2016-01-01 \
-  --end-date 2025-12-31
+  --sources noaa,meteostat,nws
 ```
 
 This will:
 
-- Retrieve weather data from NOAA, Open-Meteo, and NWS
+- Retrieve weather data from NOAA, Meteostat, and NWS (Over standard trailing 10 year period)
+- Retrieve historical weather data from NOAA and Meteostat, plus recent observation data from NWS
 - Save raw source responses locally in `data/raw/...`
 - Build processed source-specific daily datasets in `data/processed/...`
 - Build unified curated climate outputs in `data/curated/...`
 - Send analytics-ready daily climate rows to MongoDB collection `climate.climate_daily`
 
+If you omit `--date`, the pipeline uses the current day as the run date. If you omit `--start-date` and `--end-date`, it uses the default trailing 10-year historical window ending yesterday.
+
 For a smaller test run:
 
 ```bash
 .venv/bin/python src/main.py \
-  --sources noaa,open_meteo \
+  --sources noaa,meteostat,nws \
   --limit-stations 3 \
-  --start-date 2024-01-01 \
-  --end-date 2024-12-31
+  --start-date YYYY-MM-DD \
+  --end-date YYYY-MM-DD
 ```
+
+This test command also uses the current day as the run date unless you add `--date YYYY-MM-DD`.
 
 ## Data Layout
 
 Raw data is saved under:
 
 - `data/raw/noaa/run_date=YYYY-MM-DD/noaa_daily.jsonl`
-- `data/raw/open_meteo/run_date=YYYY-MM-DD/open_meteo_daily.jsonl`
+- `data/raw/meteostat/run_date=YYYY-MM-DD/meteostat_daily.jsonl`
 - `data/raw/nws/run_date=YYYY-MM-DD/station=<NWS_ID>/nws_raw.json`
 
 Processed data is saved under:
 
 - `data/processed/noaa_daily/parquet`
-- `data/processed/open_meteo_daily/parquet`
+- `data/processed/meteostat_daily/parquet`
 - `data/processed/nws_daily/parquet`
 
 Curated data is saved under:
@@ -115,23 +118,14 @@ MongoDB receives only analytics-ready daily climate rows from `data/curated/clim
 
 ## Current Status
 
-### Completed
+The core data pipeline is fully implemented and operational.
 
-- Weather data acquisition is wired for NOAA, NWS, and Open-Meteo.
-- Raw source data storage is in place for traceability.
-- MongoDB integration stores daily climate rows instead of raw API payloads.
-- Modular pipeline structure is in place: ingestion -> processing -> storage.
-- Environment configuration support using `.env` is working.
-- Source-specific processed datasets and unified curated trend datasets are being generated.
+- Weather data ingestion is supported for NOAA, NWS, and Meteostat.
+- Raw source responses are retained locally to support traceability, debugging, and selective reruns.
+- Source-specific Spark transformation stages generate processed daily Parquet datasets.
+- Unified curated climate datasets are produced for downstream daily analytics and yearly trend analysis.
+- MongoDB stores analytics-ready normalized daily climate records rather than raw source payloads.
+- The pipeline orchestrator supports full executions, partial reruns, station-limited test runs, and runtime status reporting.
+- Error handling is implemented for transient API failures, station-level source failures, transformation validation errors, MongoDB retry scenarios, and resumable ingestion workflows where applicable.
 
-### In Progress
-
-- Full live validation of all sources together across longer historical windows.
-- NOAA API reliability handling for temporary service interruptions like `503` responses.
-- Documentation and operational cleanup for larger-scale historical runs.
-
-### Planned
-
-- NOAA bulk historical ingestion for better scaling toward 2,000 stations.
-- Geographic station expansion across the U.S. with balanced coverage.
-- Additional performance tuning for large multi-year backfills and downstream analytics.
+Future work is focused on operational refinement, performance optimization, and presentation improvements rather than additional core pipeline development.
