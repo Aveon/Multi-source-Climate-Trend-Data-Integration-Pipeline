@@ -8,6 +8,7 @@ DEFAULT_STATIONS_CSV = PROJECT_ROOT / "data" / "reference" / "weather_stations_m
 
 
 def _parse_bool(value: Optional[str], default: bool = True) -> bool:
+    """Interpret common CSV truthy values while allowing a default when blank."""
     if value is None or value == "":
         return default
     return str(value).strip().lower() in {"1", "true", "yes", "y"}
@@ -49,6 +50,7 @@ def load_station_manifest(
 
 
 def first_non_empty(row: Dict[str, str], *field_names: str) -> str:
+    """Return the first populated field value from a CSV row."""
     for field_name in field_names:
         value = row.get(field_name)
         if value is not None and value != "":
