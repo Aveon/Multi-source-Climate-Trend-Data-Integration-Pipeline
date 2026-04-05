@@ -112,6 +112,8 @@ Curated data is saved under:
 
 MongoDB receives only analytics-ready daily climate rows from `data/curated/climate_daily/parquet`.
 
+The pipeline also produces yearly trend datasets in `data/curated/climate_trends/parquet` and `data/curated/climate_trends_source_summary/parquet`, but those outputs are currently stored locally only and are not loaded into MongoDB.
+
 - Default database: `climate`
 - Default collection: `climate_daily`
 - Each document represents one source/station/day record with readable fields such as `source`, `station_name`, `date`, `avg_temp_c`, `precip_mm`, and `avg_wind_mps`
@@ -129,3 +131,5 @@ The core data pipeline is fully implemented and operational.
 - Error handling is implemented for transient API failures, station-level source failures, transformation validation errors, MongoDB retry scenarios, and resumable ingestion workflows where applicable.
 
 Future work is focused on operational refinement, performance optimization, and presentation improvements rather than additional core pipeline development.
+
+One future enhancement is adding the yearly trend outputs to MongoDB as separate collections alongside the daily `climate_daily` dataset.
