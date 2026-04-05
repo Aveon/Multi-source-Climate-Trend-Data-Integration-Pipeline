@@ -1,0 +1,66 @@
+[
+  {
+    "source": "meteostat",
+    "date": "2024-12-31",
+    "station_name": "AKRON CANTON AIRPORT",
+    "avg_temp_c": 4.2,
+    "precip_mm": 15.5,
+    "avg_wind_mps": 4.888888888888889
+  },
+  {
+    "source": "meteostat",
+    "date": "2024-12-31",
+    "station_name": "ALBANY INTERNATIONAL AIRPORT",
+    "avg_temp_c": 6.4,
+    "precip_mm": 0.0,
+    "avg_wind_mps": 1.6944444444444442
+  },
+  {
+    "source": "meteostat",
+    "date": "2024-12-31",
+    "station_name": "ALBUQUERQUE INTERNATIONAL AIRPORT",
+    "avg_temp_c": 5.7,
+    "precip_mm": 0.0,
+    "avg_wind_mps": 2.111111111111111
+  },
+  {
+    "source": "meteostat",
+    "date": "2024-12-31",
+    "station_name": "ANCHORAGE TED STEVENS INTERNATIONAL AIRPORT",
+    "avg_temp_c": -8.2,
+    "precip_mm": 0.0,
+    "avg_wind_mps": 2.888888888888889
+  },
+  {
+    "source": "meteostat",
+    "date": "2024-12-31",
+    "station_name": "ATLANTA HARTSFIELD JACKSON INTERNATIONAL AIRPORT",
+    "avg_temp_c": 14.7,
+    "precip_mm": 0.0,
+    "avg_wind_mps": 6.694444444444445
+  },
+  {
+    "source": "meteostat",
+    "date": "2024-12-31",
+    "station_name": "BALTIMORE WASHINGTON INTERNATIONAL AIRPORT",
+    "avg_temp_c": 7.4,
+    "precip_mm": 5.6,
+    "avg_wind_mps": 2.611111111111111
+  },
+  {
+    "source": "meteostat",
+    "date": "2024-12-31",
+    "station_name": "BARTLESVILLE MUNICIPAL AIRPORT",
+    "avg_temp_c": 5.3,
+    "precip_mm": 0.0,
+    "avg_wind_mps": 3.222222222222222
+  },
+  {
+    "source": "meteostat",
+    "date": "2024-12-31",
+    "station_name": "BILLINGS INTERNATIONAL AIRPORT",
+    "avg_temp_c": -4.2,
+    "precip_mm": 1.0,
+    "avg_wind_mps": 2.111111111111111
+  }
+]

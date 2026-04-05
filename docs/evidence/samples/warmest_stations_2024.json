@@ -1,0 +1,62 @@
+[
+  {
+    "days_counted": 366,
+    "station_name": "PHOENIX AIRPORT",
+    "source": "noaa",
+    "yearly_avg_temp_c": 25.89
+  },
+  {
+    "days_counted": 366,
+    "station_name": "PHOENIX AIRPORT",
+    "source": "meteostat",
+    "yearly_avg_temp_c": 25.77
+  },
+  {
+    "days_counted": 366,
+    "station_name": "HONOLULU INTERNATIONAL AIRPORT",
+    "source": "noaa",
+    "yearly_avg_temp_c": 25.68
+  },
+  {
+    "days_counted": 364,
+    "station_name": "MIAMI KENDALL TAMIAMI EXEC AIRPORT",
+    "source": "noaa",
+    "yearly_avg_temp_c": 25.3
+  },
+  {
+    "days_counted": 366,
+    "station_name": "HONOLULU INTERNATIONAL AIRPORT",
+    "source": "meteostat",
+    "yearly_avg_temp_c": 25.23
+  },
+  {
+    "days_counted": 361,
+    "station_name": "MIAMI KENDALL TAMIAMI EXEC AIRPORT",
+    "source": "meteostat",
+    "yearly_avg_temp_c": 25.05
+  },
+  {
+    "days_counted": 366,
+    "station_name": "NEW ORLEANS AIRPORT",
+    "source": "noaa",
+    "yearly_avg_temp_c": 22.6
+  },
+  {
+    "days_counted": 366,
+    "station_name": "LAS VEGAS WEATHER FORECAST OFFICE",
+    "source": "meteostat",
+    "yearly_avg_temp_c": 22.53
+  },
+  {
+    "days_counted": 366,
+    "station_name": "NEW ORLEANS AIRPORT",
+    "source": "meteostat",
+    "yearly_avg_temp_c": 22.51
+  },
+  {
+    "days_counted": 366,
+    "station_name": "LAS VEGAS WEATHER FORECAST OFFICE",
+    "source": "noaa",
+    "yearly_avg_temp_c": 21.28
+  }
+]

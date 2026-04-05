@@ -4,7 +4,10 @@ __pycache__/
 *.pyc
 .vscode/
 # Generated pipeline outputs
-data/raw/
+data/raw/*
+!data/raw/.gitkeep
 data/cache/
-data/processed/
-data/curated/
+data/processed/*
+!data/processed/.gitkeep
+data/curated/*
+!data/curated/.gitkeep

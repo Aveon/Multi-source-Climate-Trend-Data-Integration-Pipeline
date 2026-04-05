@@ -1,0 +1,14 @@
+[
+  {
+    "count": 182518,
+    "source": "meteostat"
+  },
+  {
+    "count": 182384,
+    "source": "noaa"
+  },
+  {
+    "count": 59,
+    "source": "nws"
+  }
+]

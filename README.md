@@ -33,7 +33,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Required libraries include `requests`, `pymongo`, `pyspark`, and `python-dotenv`.
+Core dependencies are installed from `requirements.txt`, including `requests`, `pyspark`, `pymongo`, `python-dotenv`, `pyyaml`, and `dnspython`.
 
 ## Environment Setup
 
