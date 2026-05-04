@@ -142,4 +142,5 @@ One future enhancement is adding the yearly trend outputs to MongoDB as separate
 
 ## Author and Course Context
 
+- Author: Joshua Young
 - Course: `Big Data Analytics`
