@@ -20,6 +20,38 @@ End-to-end flow:
 
 `station manifest -> raw source files -> processed daily parquet -> curated parquet -> MongoDB`
 
+## Architecture Diagram
+
+```mermaid
+flowchart LR
+    manifest["Station manifest<br/>data/reference/weather_stations_master.csv"]
+    settings["Run settings<br/>CLI + .env"]
+    noaa["NOAA ingestion"]
+    meteostat["Meteostat ingestion"]
+    nws["NWS ingestion"]
+    raw["Raw source files<br/>data/raw/..."]
+    processed["Source daily parquet<br/>data/processed/..."]
+    metrics["Stage metrics<br/>data/processed/*/metrics"]
+    curated["Curated analytical parquet<br/>data/curated/..."]
+    mongo["MongoDB<br/>climate.climate_daily"]
+    evidence["Query evidence<br/>docs/evidence/..."]
+
+    manifest --> noaa
+    manifest --> meteostat
+    manifest --> nws
+    settings --> noaa
+    settings --> meteostat
+    settings --> nws
+    noaa --> raw
+    meteostat --> raw
+    nws --> raw
+    raw --> processed
+    processed --> metrics
+    processed --> curated
+    curated --> mongo
+    mongo --> evidence
+```
+
 ## What Goes In
 
 Before the pipeline runs, it needs:

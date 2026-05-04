@@ -1,11 +1,10 @@
-import calendar
 import importlib
 import json
 import logging
 import os
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from time import perf_counter
 import time
@@ -76,17 +75,13 @@ def import_module_flexible(module_a: str, module_b: str):
         return importlib.import_module(module_b)
 
 
-def shift_years(value: date, years: int) -> date:
-    """Move a date by whole years while keeping the day valid for the target month."""
-    target_year = value.year + years
-    target_day = min(value.day, calendar.monthrange(target_year, value.month)[1])
-    return date(target_year, value.month, target_day)
-
-
 def default_historical_window() -> tuple[str, str]:
-    """Return the default trailing 10-year historical window for backfill runs."""
-    end_date = datetime.now(timezone.utc).date() - timedelta(days=1)
-    start_date = shift_years(end_date, -10) + timedelta(days=1)
+    """Return the default 10 full calendar years ending with the last completed year."""
+    today = datetime.now(timezone.utc).date()
+    end_year = today.year - 1
+    start_year = end_year - 9
+    start_date = date(start_year, 1, 1)
+    end_date = date(end_year, 12, 31)
     return start_date.isoformat(), end_date.isoformat()
 
 
@@ -155,9 +150,17 @@ def count_ingested_records(source: str, raw_output: Optional[str], *, run_date: 
     return 0
 
 
-def calculate_retrieved_record_count(source: str, *, before_count: int, after_count: int) -> int:
+def calculate_retrieved_record_count(
+    source: str,
+    *,
+    before_count: int,
+    after_count: int,
+    cfg: Dict[str, Any],
+) -> int:
     """Report newly retrieved records while respecting each source's write pattern."""
     if source == "meteostat":
+        return max(0, after_count - before_count)
+    if source == "noaa" and cfg.get("NOAA_INGEST_MODE") == "bulk_station":
         return max(0, after_count - before_count)
     return after_count
 
@@ -423,6 +426,7 @@ def run_ingestion_batch(
                 source,
                 before_count=before_counts.get(source, 0),
                 after_count=count_ingested_records(source, raw_output, run_date=run_date),
+                cfg=cfg,
             )
             after_count = count_ingested_records(source, raw_output, run_date=run_date)
             raw_counts[source] = raw_count

@@ -8,7 +8,7 @@ import sys
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 import requests
 
@@ -161,6 +161,30 @@ def fetch_page(
 def json_line(record: Dict[str, object]) -> str:
     """Serialize one raw record into a stable JSONL row."""
     return json.dumps(record, sort_keys=True)
+
+
+def load_completed_station_ids(out_path: Path) -> Set[str]:
+    """Read an existing NOAA raw file and return completed station ids."""
+    if not out_path.exists() or out_path.stat().st_size == 0:
+        return set()
+
+    station_ids: Set[str] = set()
+    with out_path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                logger.warning("Skipping malformed NOAA row while scanning %s", out_path)
+                continue
+
+            station_id = record.get("noaa_station_id")
+            if station_id:
+                station_ids.add(station_id)
+
+    return station_ids
 
 
 def append_failed_station(
@@ -378,15 +402,24 @@ def write_bulk_station_records(
     datatypes: List[str],
     base_url: str,
     fail_on_station_error: bool,
+    completed_station_ids: Optional[Set[str]] = None,
 ) -> Tuple[int, int]:
     """Write NOAA bulk station records to JSONL and return download/row counts."""
     download_count = 0
     record_count = 0
     failed_stations = 0
+    completed_station_ids = completed_station_ids or set()
 
     for station in stations:
         noaa_station_id = station.get("noaa_station_id", "")
         if not noaa_station_id:
+            continue
+
+        if noaa_station_id in completed_station_ids:
+            logger.debug(
+                "Skipping NOAA station=%s because it is already present in the raw file",
+                noaa_station_id,
+            )
             continue
 
         try:
@@ -427,6 +460,8 @@ def write_bulk_station_records(
             for record in station_records:
                 fh.write(json_line(record) + "\n")
             record_count += len(station_records)
+            fh.flush()
+            completed_station_ids.add(noaa_station_id)
 
     return download_count, record_count, failed_stations
 
@@ -554,6 +589,7 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--date", default=None, help="Run date in YYYY-MM-DD (defaults to today UTC)")
     parser.add_argument("--limit-stations", type=int, default=None, help="Maximum number of stations to ingest from the manifest")
     parser.add_argument("--fail-on-station-error", action="store_true", help="Stop the run when any station fails")
+    parser.add_argument("--no-resume", action="store_true", help="Start a fresh NOAA raw file instead of appending to an existing one")
     args = parser.parse_args(argv)
 
     run_date = args.date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -568,10 +604,13 @@ def main(argv: Optional[list] = None) -> int:
     end_date = parse_date(args.end_date)
 
     session = requests.Session()
-    if failed_path.exists():
+    resume_enabled = args.ingest_mode == "bulk_station" and not args.no_resume
+    completed_station_ids = load_completed_station_ids(out_path) if resume_enabled else set()
+    open_mode = "a" if resume_enabled and out_path.exists() else "w"
+    if not resume_enabled and failed_path.exists():
         failed_path.unlink()
 
-    with out_path.open("w", encoding="utf-8") as fh:
+    with out_path.open(open_mode, encoding="utf-8") as fh:
         if args.ingest_mode == "bulk_station":
             request_count, record_count, failed_stations = write_bulk_station_records(
                 fh,
@@ -585,6 +624,7 @@ def main(argv: Optional[list] = None) -> int:
                 datatypes=datatypes,
                 base_url=args.bulk_base_url,
                 fail_on_station_error=args.fail_on_station_error,
+                completed_station_ids=completed_station_ids,
             )
             logger.debug(
                 "Saved %d NOAA rows from %d bulk station downloads to %s (failed_stations=%s)",

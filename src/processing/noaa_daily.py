@@ -70,7 +70,7 @@ def main(argv: Optional[list] = None) -> int:
     run_date = args.run_date or "*"
     raw_paths = find_usable_raw_paths(raw_glob)
     if not raw_paths:
-        print(f"No non-empty raw NOAA files matched {raw_glob}")
+        logger.error("No non-empty raw NOAA files matched %s", raw_glob)
         return 1
 
     spark = get_spark("noaa_daily")
@@ -79,9 +79,9 @@ def main(argv: Optional[list] = None) -> int:
         raw_input_rows = df_raw.count()
         missing_columns = get_missing_columns(df_raw.columns)
         if missing_columns:
-            print(
-                "Skipping NOAA processing because required columns are missing: "
-                + ", ".join(missing_columns)
+            logger.error(
+                "Skipping NOAA processing because required columns are missing: %s",
+                ", ".join(missing_columns),
             )
             return 1
 

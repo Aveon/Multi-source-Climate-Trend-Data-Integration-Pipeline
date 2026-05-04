@@ -67,14 +67,13 @@ From the project root directory run:
 
 This will:
 
-- Retrieve weather data from NOAA, Meteostat, and NWS (Over standard trailing 10 year period)
 - Retrieve historical weather data from NOAA and Meteostat, plus recent observation data from NWS
 - Save raw source responses locally in `data/raw/...`
 - Build processed source-specific daily datasets in `data/processed/...`
 - Build unified curated climate outputs in `data/curated/...`
 - Send analytics-ready daily climate rows to MongoDB collection `climate.climate_daily`
 
-If you omit `--date`, the pipeline uses the current day as the run date. If you omit `--start-date` and `--end-date`, it uses the default trailing 10-year historical window ending yesterday.
+If you omit `--date`, the pipeline uses the current day as the run date. If you omit `--start-date` and `--end-date`, it uses the default 10 full calendar years ending with the last completed year.
 
 For a smaller test run:
 
@@ -108,6 +107,13 @@ Curated data is saved under:
 - `data/curated/climate_trends/parquet`
 - `data/curated/climate_trends_source_summary/parquet`
 
+## Documentation
+
+- `docs/pipeline-documentation.md`: end-to-end pipeline architecture, flow diagram, stages, and failure handling
+- `docs/schema-documentation.md`: final analytical schema design and consumer contract
+- `docs/data-dictionary.md`: field-level dictionary for curated outputs and MongoDB documents
+- `docs/validation-report.md`: validation metrics, evidence links, sanity checks, and edge case behavior
+
 ## MongoDB
 
 MongoDB receives only analytics-ready daily climate rows from `data/curated/climate_daily/parquet`.
@@ -133,3 +139,7 @@ The core data pipeline is fully implemented and operational.
 Future work is focused on operational refinement, performance optimization, and presentation improvements rather than additional core pipeline development.
 
 One future enhancement is adding the yearly trend outputs to MongoDB as separate collections alongside the daily `climate_daily` dataset.
+
+## Author and Course Context
+
+- Course: `Big Data Analytics`

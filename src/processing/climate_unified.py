@@ -58,7 +58,7 @@ def main(argv: Optional[list] = None) -> int:
         frames.append(spark.read.parquet(source_path))
 
     if not frames:
-        print(f"No processed datasets found for sources={sources}")
+        logger.error("No processed datasets found for sources=%s", sources)
         spark.stop()
         return 1
 

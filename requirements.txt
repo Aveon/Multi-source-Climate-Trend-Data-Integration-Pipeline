@@ -1,6 +1,6 @@
-requests
-pyspark
-pymongo
-python-dotenv
-pyyaml
-dnspython
+dnspython==2.8.0
+pymongo==4.16.0
+pyspark==4.1.1
+python-dotenv==1.2.2
+PyYAML==6.0.3
+requests==2.32.5

@@ -53,7 +53,7 @@ def main(argv: Optional[list] = None) -> int:
         legacy_glob = str(data_dir / "raw" / "*" / "nws_raw.json")
         raw_paths = sorted(glob.glob(legacy_glob))
     if not raw_paths:
-        print(f"No raw NWS files matched {raw_glob}")
+        logger.error("No raw NWS files matched %s", raw_glob)
         return 1
 
     stations_csv = args.stations_csv or str(data_dir / "reference" / "weather_stations_master.csv")

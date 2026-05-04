@@ -36,7 +36,7 @@ def _emit_filtered_startup_output(captured_output: str) -> None:
     for line in captured_output.splitlines():
         if _is_noisy_spark_startup_line(line):
             continue
-        print(line, file=sys.stderr)
+        sys.stderr.write(f"{line}\n")
 
 
 def _create_spark_session(builder) -> SparkSession:
