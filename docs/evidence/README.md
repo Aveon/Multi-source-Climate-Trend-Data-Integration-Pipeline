@@ -10,5 +10,6 @@ Current examples include:
 - `screenshots/Sample_output_rows.png` with `samples/sample_climate_daily_documents.json`
 - `screenshots/Counts_by_source.png` with `samples/source_counts.json`
 - `screenshots/Warmest_stations_2024.png` with `samples/warmest_stations_2024.json`
+- `samples/meteostat_birmingham_trace.json`, which traces one raw Meteostat record through the final curated schema
 
 These files are meant to show that the final output data can be queried in MongoDB and that the returned records match the project schema.

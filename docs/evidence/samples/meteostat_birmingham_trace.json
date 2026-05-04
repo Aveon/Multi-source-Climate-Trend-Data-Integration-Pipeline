@@ -1,0 +1,94 @@
+{
+  "purpose": "Specific record traced from raw Meteostat input through the final curated climate_daily schema.",
+  "source_file": "data/raw/meteostat/run_date=2026-05-03/meteostat_daily.jsonl",
+  "curated_file": "data/curated/climate_daily/parquet",
+  "record_key": {
+    "source": "meteostat",
+    "date": "2024-12-31",
+    "noaa_station_id": "GHCND:USW00013876",
+    "source_station_id": "72228",
+    "station_name": "BIRMINGHAM AIRPORT"
+  },
+  "raw_record": {
+    "source": "meteostat",
+    "run_date": "2026-05-03",
+    "date": "2024-12-31",
+    "noaa_station_id": "GHCND:USW00013876",
+    "nws_station_id": "KBHM",
+    "meteostat_station_id": "72228",
+    "station_name": "BIRMINGHAM AIRPORT",
+    "state": "AL",
+    "country": "US",
+    "latitude": "33.56545",
+    "longitude": "-86.7449",
+    "temp": 15.6,
+    "tmin": 8.3,
+    "tmax": 19.4,
+    "prcp": 0.0,
+    "wspd": 21.6,
+    "wpgt": null,
+    "snwd": 0.0
+  },
+  "transformation_checks": [
+    {
+      "raw_field": "temp",
+      "raw_value": 15.6,
+      "curated_field": "avg_temp_c",
+      "expected_value": 15.6,
+      "rule": "Meteostat temp is already Celsius and maps directly to avg_temp_c."
+    },
+    {
+      "raw_field": "tmin",
+      "raw_value": 8.3,
+      "curated_field": "min_temp_c",
+      "expected_value": 8.3,
+      "rule": "Meteostat tmin is already Celsius and maps directly to min_temp_c."
+    },
+    {
+      "raw_field": "tmax",
+      "raw_value": 19.4,
+      "curated_field": "max_temp_c",
+      "expected_value": 19.4,
+      "rule": "Meteostat tmax is already Celsius and maps directly to max_temp_c."
+    },
+    {
+      "raw_field": "prcp",
+      "raw_value": 0.0,
+      "curated_field": "precip_mm",
+      "expected_value": 0.0,
+      "rule": "Meteostat precipitation is already millimeters and maps directly to precip_mm."
+    },
+    {
+      "raw_field": "wspd",
+      "raw_value": 21.6,
+      "curated_field": "avg_wind_mps",
+      "expected_value": 6.0,
+      "rule": "Meteostat wind speed is km/h, so the pipeline divides by 3.6 to produce meters per second."
+    },
+    {
+      "raw_field": "snwd",
+      "raw_value": 0.0,
+      "curated_field": "snow_mm",
+      "expected_value": 0.0,
+      "rule": "Meteostat snow depth is converted to the final snow_mm field."
+    }
+  ],
+  "curated_record_verified_from_parquet": {
+    "source": "meteostat",
+    "date": "2024-12-31",
+    "noaa_station_id": "GHCND:USW00013876",
+    "source_station_id": "72228",
+    "station_name": "BIRMINGHAM AIRPORT",
+    "state": "AL",
+    "country": "US",
+    "avg_temp_c": 15.6,
+    "min_temp_c": 8.3,
+    "max_temp_c": 19.4,
+    "precip_mm": 0.0,
+    "avg_wind_mps": 6.0,
+    "max_wind_mps": null,
+    "snow_mm": 0.0,
+    "obs_count": 1,
+    "ingest_run_date": "2026-05-03"
+  }
+}

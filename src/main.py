@@ -514,6 +514,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     raw_outputs: Dict[str, Optional[str]] = {}
     raw_counts: Dict[str, int] = {}
+    total_raw_records_available = 0
     meteostat_limit_stations = args.meteostat_batch_size
     meteostat_station_offset = 0
 

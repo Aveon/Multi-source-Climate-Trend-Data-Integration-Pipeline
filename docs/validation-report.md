@@ -2,6 +2,16 @@
 
 This report summarizes the validation evidence for the climate data pipeline. It covers the run artifacts currently available in the project workspace and the tracked query evidence under `docs/evidence/`.
 
+## Milestone Validation Checklist
+
+| Required item | Evidence included in this report |
+| --- | --- |
+| Test cases executed | Full pipeline run, station-limited smoke run, source-specific processing checks, MongoDB query checks, and edge-case behavior checks for missing input, invalid rows, duplicate rows, and API retry handling. |
+| Data quality metrics | Raw rows, invalid rows removed, valid rows, processed output rows, aggregation counts, final MongoDB counts by source, and curated output row totals. |
+| Sample validations | Representative MongoDB records, source-count evidence, warmest-station sanity query, and `docs/evidence/samples/meteostat_birmingham_trace.json`, which traces one raw Meteostat record into the final schema. |
+| Known issues | Evidence/metrics run dates may differ, NWS has recent-observation coverage only, and yearly trend parquet outputs are not currently loaded to MongoDB. |
+| Performance results | Full run duration, smoke-run duration, full-run raw-to-curated throughput, and MongoDB write visibility counts. |
+
 ## Run Evidence
 
 The latest local metrics files found for `run_date=2026-04-21` show that the pipeline produced processed outputs for all three sources:
@@ -60,6 +70,16 @@ Sample validations were also performed by tracing representative records and res
 - sample MongoDB documents confirm that final records contain the expected climate fields
 - source-count evidence confirms that all three sources appear in the final stored output
 - yearly query evidence confirms that the curated output can be used for comparison and trend-style analysis
+
+One explicit spot-check example is tracked in `docs/evidence/samples/meteostat_birmingham_trace.json`. It traces a raw Meteostat input row into the shared daily output schema and verifies the final curated parquet row:
+
+| Stage | Example values |
+| --- | --- |
+| Raw Meteostat row | `run_date=2026-05-03`, `station_name=BIRMINGHAM AIRPORT`, `date=2024-12-31`, `temp=15.6`, `tmin=8.3`, `tmax=19.4`, `prcp=0.0`, `wspd=21.6` |
+| Transformation rule | `temp -> avg_temp_c`, `tmin -> min_temp_c`, `tmax -> max_temp_c`, `prcp -> precip_mm`, `wspd / 3.6 -> avg_wind_mps` |
+| Verified final curated row | `avg_temp_c=15.6`, `min_temp_c=8.3`, `max_temp_c=19.4`, `precip_mm=0.0`, `avg_wind_mps=6.0`, `obs_count=1`, `ingest_run_date=2026-05-03` |
+
+This spot-check confirms that source fields are preserved and converted into the final analytical schema as intended.
 
 ## Consistency
 
